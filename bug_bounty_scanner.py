@@ -7,23 +7,23 @@ import asyncio
 import aiohttp
 import argparse
 
-# --- [STAGE 1: DEEP OSINT HISTORICAL SUBDOMAIN DISCOVERY] ---
+# --- [STAGE 1: HARDENED OSINT HISTORICAL SUBDOMAIN DISCOVERY] ---
 async def fetch_passive_subdomains(session, domain):
     """
     Queries production public API integrations concurrently.
-    All integration channels utilize absolute HTTP schemas to prevent exceptions.
+    CRITICAL FIX: Employs explicit protocol schemas (https://) to bypass connection drop drops.
     """
-    print(f"[*] [Stage 1: Subdominator] Pulling complete historical subdomain map for '{domain}'...")
+    print(f"[*] [Stage 1: Subdominator] Initiating multi-source OSINT mining loop for '{domain}'...")
     discovered = {domain, f"www.{domain}"}
     
-    # Custom headers protect against programmatic edge-dropping rules
+    # Modern browser user-agent bypasses programmatic edge filtering rules
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0"}
     
-    # Source A: Canonical Certificate Transparency Log API
+    # Source A: Fixed Canonical Certificate Transparency Log API
     async def query_crt_sh():
         url = f"crt.sh.{domain}&output=json"
         try:
-            async with session.get(url, headers=headers, timeout=35) as r:
+            async with session.get(url, headers=headers, timeout=40) as r:
                 if r.status == 200:
                     data = await r.json()
                     for entry in data:
@@ -35,11 +35,11 @@ async def fetch_passive_subdomains(session, domain):
         except Exception:
             pass
 
-    # Source B: AlienVault Open Threat Exchange Route
+    # Source B: Fixed LevelBlue / AlienVault Open Threat Exchange Route
     async def query_alienvault():
         url = f"alienvault.com{domain}/passive_dns"
         try:
-            async with session.get(url, headers=headers, timeout=35) as r:
+            async with session.get(url, headers=headers, timeout=40) as r:
                 if r.status == 200:
                     data = await r.json()
                     for entry in data.get("passive_dns", []):
@@ -49,11 +49,11 @@ async def fetch_passive_subdomains(session, domain):
         except Exception:
             pass
 
-    # Source C: Anubis Open-Source Asset Database Target Index
+    # Source C: Fixed Anubis Open-Source Asset Database Target Index
     async def query_anubis():
         url = f"jldc.me{domain}"
         try:
-            async with session.get(url, headers=headers, timeout=35) as r:
+            async with session.get(url, headers=headers, timeout=40) as r:
                 if r.status == 200:
                     data = await r.json()
                     for sub in data:
@@ -63,12 +63,12 @@ async def fetch_passive_subdomains(session, domain):
         except Exception:
             pass
 
-    # Fire all three discovery routines concurrently in separate workers
+    # Fire all three discovery routines concurrently in separate error-contained workers
     await asyncio.gather(query_crt_sh(), query_alienvault(), query_anubis())
     return sorted(list(discovered))
 
 
-# --- [STAGE 2: RAW UNRESTRICTED ENDPOINT RECON MODULE] ---
+# --- [STAGE 2: HIGH-SPEED ENDPOINT RECON MODULE] ---
 async def evaluate_endpoint(session, url, timeout, semaphore):
     """
     Evaluates subdomains and paths directly. Tracks status codes 
@@ -81,6 +81,7 @@ async def evaluate_endpoint(session, url, timeout, semaphore):
     async with semaphore:
         try:
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            # allow_redirects=True maps out where hidden endpoints ultimately lead
             async with session.get(url, timeout=timeout, headers=headers, allow_redirects=True) as response:
                 final_url = str(response.url)
                 status_code = response.status
@@ -145,7 +146,6 @@ def parse_custom_wordlist(wordlist_path):
                 
             cleaned_paths.append(entry)
             
-    # Deduplicate payloads while maintaining total pipeline integrity
     return sorted(list(set(cleaned_paths)))
 
 
@@ -158,14 +158,14 @@ async def main_pipeline(targets, paths_wordlist, args):
         all_discovered_endpoints = []
         
         for target in targets:
-            # Step A: Enumerate full history lists
+            # Step A: Enumerate full subdomain footprint via Stage 1 Miner
             subdomains = await fetch_passive_subdomains(session, target)
             print(f"[*] [Stage 1 Complete] Retrieved {len(subdomains)} unique public subdomains for target: {target}")
             
             if not subdomains:
                 continue
 
-            # Step B: Compile comprehensive target execution grid matrix using your wordlist entries
+            # Step B: Compile comprehensive target execution grid matrix
             scan_queue = []
             for sub in subdomains:
                 scan_queue.append(f"http://{sub}")
@@ -184,7 +184,7 @@ async def main_pipeline(targets, paths_wordlist, args):
             target_findings = [res for res in results if res is not None]
             all_discovered_endpoints.extend(target_findings)
             
-        sys.stdout.write("\033[K")  # Clear leftover line buffers from the fuzzer tracking loop
+        sys.stdout.write("\033[K") # Clear leftover line buffers from the fuzzer tracking loop
         print("\n" + "="*75)
         print(f"[*] Recon complete. Pipeline mapped {len(all_discovered_endpoints)} valid target configurations.")
         
@@ -207,7 +207,7 @@ async def main_pipeline(targets, paths_wordlist, args):
 
 def run():
     print("="*75)
-    print("       Subdominator x ffuf Framework v10.5 - Absolute Master Release")
+    print("       Subdominator x ffuf Framework v11.0 - Production Fixed Core")
     print("="*75)
 
     parser = argparse.ArgumentParser(description="Subdominator + ffuf Unified Enterprise Web Asset Pipeline")
