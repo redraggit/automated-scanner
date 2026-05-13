@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Bug Bounty Automated Scanner
-Scans wildcard domains for subdomains and endpoints
+Bug Bounty Automated Scanner 
 """
 
 import asyncio
@@ -9,310 +8,252 @@ import aiohttp
 import argparse
 import json
 import csv
+import configparser
 from urllib.parse import urljoin, urlparse
 from typing import Set, List, Dict
 from datetime import datetime
 import re
 from collections import defaultdict
+import sys
+
+# Colors for better output
+class Colors:
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BLUE = '\033[94m'
+    RESET = '\033[0m'
 
 class BugBountyScanner:
     def __init__(self, max_concurrent=10, timeout=10, user_agent=None):
         self.max_concurrent = max_concurrent
         self.timeout = timeout
-        self.user_agent = user_agent or "BugBountyScanner/1.0"
-        self.discovered_endpoints = defaultdict(set)
+        self.user_agent = user_agent or "Mozilla/5.0 (compatible; BugBountyScanner/2.0)"
+        
         self.subdomains = set()
+        self.discovered_endpoints = defaultdict(set)
         self.semaphore = asyncio.Semaphore(max_concurrent)
-        
-    async def enumerate_subdomains(self, wildcard_domain: str) -> Set[str]:
-        """
-        Enumerate subdomains for a wildcard domain
-        Uses common subdomain wordlist
-        """
-        print(f"[*] Enumerating subdomains for: {wildcard_domain}")
-        
-        # Remove wildcard prefix
-        base_domain = wildcard_domain.replace('*.', '')
-        
-        # Common subdomain wordlist
-        common_subdomains = [
-            'www', 'mail', 'ftp', 'localhost', 'webmail', 'smtp', 'pop', 'ns1', 'webdisk',
-            'ns2', 'cpanel', 'whm', 'autodiscover', 'autoconfig', 'ns', 'm', 'imap', 'test',
-            'dev', 'staging', 'beta', 'api', 'admin', 'portal', 'dashboard', 'login', 'app',
-            'blog', 'shop', 'store', 'cdn', 'static', 'media', 'assets', 'img', 'images',
-            'upload', 'downloads', 'docs', 'support', 'help', 'status', 'monitor', 'vpn',
-            'git', 'mysql', 'db', 'redis', 'jenkins', 'gitlab', 'github', 'jira', 'confluence'
-        ]
-        
-        tasks = []
-        for subdomain in common_subdomains:
-            full_domain = f"{subdomain}.{base_domain}"
-            tasks.append(self.check_subdomain(full_domain))
-        
-        results = await asyncio.gather(*tasks)
-        active_subdomains = {sd for sd in results if sd}
-        
-        print(f"[+] Found {len(active_subdomains)} active subdomains for {base_domain}")
-        self.subdomains.update(active_subdomains)
-        return active_subdomains
-    
+        self.session = None
+
+    async def init_session(self):
+        """Initialize persistent aiohttp session"""
+        if not self.session:
+            timeout = aiohttp.ClientTimeout(total=self.timeout)
+            self.session = aiohttp.ClientSession(
+                timeout=timeout,
+                headers={'User-Agent': self.user_agent}
+            )
+
+    async def close(self):
+        if self.session:
+            await self.session.close()
+
+    async def load_config(self):
+        """Load configuration from scanner_config.ini"""
+        config = configparser.ConfigParser()
+        try:
+            config.read('scanner_config.ini')
+            
+            # Load subdomains from config
+            if 'subdomains' in config:
+                self.common_subdomains = [k.strip() for k in config['subdomains'] if k.strip()]
+            else:
+                self.common_subdomains = [...]  # fallback list (kept short)
+
+            # Load common paths from config
+            if 'endpoints' in config:
+                self.common_paths = [k.strip() for k in config['endpoints'] if k.strip()]
+            else:
+                self.common_paths = ['/api', '/admin', ...]  # fallback
+
+            print(f"{Colors.BLUE}[*]{Colors.RESET} Configuration loaded successfully")
+        except Exception:
+            print(f"{Colors.YELLOW}[!]{Colors.RESET} Could not load config, using defaults")
+
     async def check_subdomain(self, subdomain: str) -> str:
-        """Check if subdomain is active"""
+        """Check if subdomain is alive (HTTP + HTTPS)"""
+        async with self.semaphore:
+            for protocol in ['https', 'http']:
+                try:
+                    async with self.session.get(
+                        f"{protocol}://{subdomain}",
+                        allow_redirects=True
+                    ) as resp:
+                        if resp.status < 500:
+                            print(f"{Colors.GREEN}[✓]{Colors.RESET} {subdomain} ({protocol}) - {resp.status}")
+                            return subdomain
+                except asyncio.TimeoutError:
+                    continue
+                except Exception:
+                    continue
+        return None
+
+    async def enumerate_subdomains(self, wildcard_domain: str) -> Set[str]:
+        print(f"{Colors.BLUE}[*]{Colors.RESET} Enumerating subdomains for: {wildcard_domain}")
+        base_domain = wildcard_domain.replace('*.', '')
+
+        tasks = [self.check_subdomain(f"{sub}.{base_domain}") for sub in self.common_subdomains]
+        results = await asyncio.gather(*tasks)
+        
+        active = {sd for sd in results if sd}
+        self.subdomains.update(active)
+        
+        print(f"{Colors.GREEN}[+]{Colors.RESET} Found {len(active)} active subdomains for {base_domain}")
+        return active
+
+    async def check_endpoint(self, endpoint: str) -> str:
+        """Check single endpoint"""
         async with self.semaphore:
             try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        f"http://{subdomain}",
-                        timeout=aiohttp.ClientTimeout(total=self.timeout),
-                        allow_redirects=True,
-                        headers={'User-Agent': self.user_agent}
-                    ) as response:
-                        if response.status < 500:  # Accept anything not server error
-                            print(f"  [✓] {subdomain} - Status: {response.status}")
-                            return subdomain
-            except:
+                async with self.session.get(endpoint, allow_redirects=False) as resp:
+                    if resp.status in (200, 201, 202, 301, 302, 401, 403):
+                        print(f"{Colors.GREEN}[✓]{Colors.RESET} {endpoint} - {resp.status}")
+                        return endpoint
+            except Exception:
                 pass
-            return None
-    
-    async def discover_endpoints(self, url: str) -> Set[str]:
-        """
-        Discover endpoints for a given URL
-        Methods: crawling, common paths, wayback machine simulation
-        """
-        print(f"\n[*] Discovering endpoints for: {url}")
+        return None
+
+    async def crawl_page(self, url: str) -> Set[str]:
+        """Improved basic crawler"""
         endpoints = set()
-        
-        # Add base URL
-        endpoints.add(url)
-        
-        # Common endpoint patterns
-        common_paths = [
-            '/api', '/api/v1', '/api/v2', '/v1', '/v2',
-            '/admin', '/login', '/signin', '/signup', '/register',
-            '/dashboard', '/panel', '/control', '/manage',
-            '/user', '/users', '/account', '/profile', '/settings',
-            '/upload', '/download', '/files', '/documents',
-            '/search', '/query', '/find',
-            '/auth', '/oauth', '/token', '/authorize',
-            '/docs', '/documentation', '/swagger', '/api-docs',
-            '/status', '/health', '/ping', '/version',
-            '/config', '/configuration', '/env', '/.env',
-            '/backup', '/backups', '/dump', '/export',
-            '/test', '/debug', '/dev', '/development',
-            '/.git', '/.git/config', '/robots.txt', '/sitemap.xml',
-            '/wp-admin', '/wp-login.php', '/phpmyadmin',
-            '/graphql', '/graphiql', '/playground',
-        ]
-        
+        try:
+            async with self.session.get(url) as resp:
+                if resp.status != 200:
+                    return endpoints
+                
+                html = await resp.text()
+                base_domain = urlparse(url).netloc
+
+                # Better regex for links
+                patterns = [
+                    r'href=["\']([^"\']+)["\']',
+                    r'src=["\']([^"\']+)["\']'
+                ]
+                
+                for pattern in patterns:
+                    matches = re.findall(pattern, html)
+                    for match in matches:
+                        absolute = urljoin(url, match)
+                        parsed = urlparse(absolute)
+                        
+                        if parsed.netloc == base_domain or not parsed.netloc:
+                            clean = f"{parsed.scheme or 'https'}://{parsed.netloc}{parsed.path}"
+                            if parsed.query:
+                                clean += f"?{parsed.query}"
+                            endpoints.add(clean)
+        except Exception:
+            pass
+        return endpoints
+
+    async def discover_endpoints(self, url: str):
+        print(f"\n{Colors.BLUE}[*]{Colors.RESET} Discovering endpoints for: {url}")
+        endpoints = {url}
+
         # Test common paths
-        path_tasks = []
-        for path in common_paths:
-            endpoint = urljoin(url, path)
-            path_tasks.append(self.check_endpoint(endpoint))
-        
-        # Check all paths concurrently
-        results = await asyncio.gather(*path_tasks)
-        valid_endpoints = {ep for ep in results if ep}
-        endpoints.update(valid_endpoints)
-        
-        # Crawl the main page for links
+        tasks = [self.check_endpoint(urljoin(url, path)) for path in self.common_paths]
+        results = await asyncio.gather(*tasks)
+        endpoints.update(ep for ep in results if ep)
+
+        # Crawl
         crawled = await self.crawl_page(url)
         endpoints.update(crawled)
-        
-        # Store discovered endpoints
+
         self.discovered_endpoints[url].update(endpoints)
-        
-        print(f"[+] Discovered {len(endpoints)} endpoints for {url}")
-        return endpoints
-    
-    async def check_endpoint(self, endpoint: str) -> str:
-        """Check if endpoint exists and return it if valid"""
-        async with self.semaphore:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        endpoint,
-                        timeout=aiohttp.ClientTimeout(total=self.timeout),
-                        allow_redirects=False,
-                        headers={'User-Agent': self.user_agent}
-                    ) as response:
-                        # Accept 200s, 300s, 401, 403 (authentication/authorization required)
-                        if response.status in range(200, 400) or response.status in [401, 403]:
-                            print(f"  [✓] {endpoint} - Status: {response.status}")
-                            return endpoint
-            except Exception as e:
-                pass
-            return None
-    
-    async def crawl_page(self, url: str, max_depth=1) -> Set[str]:
-        """Crawl a page to find links"""
-        endpoints = set()
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout),
-                    headers={'User-Agent': self.user_agent}
-                ) as response:
-                    if response.status == 200:
-                        html = await response.text()
-                        
-                        # Simple regex to find URLs (basic crawling)
-                        # In production, use BeautifulSoup or similar
-                        href_pattern = r'href=["\']([^"\']+)["\']'
-                        src_pattern = r'src=["\']([^"\']+)["\']'
-                        
-                        matches = re.findall(href_pattern, html) + re.findall(src_pattern, html)
-                        
-                        base_domain = urlparse(url).netloc
-                        
-                        for match in matches:
-                            # Convert relative URLs to absolute
-                            absolute_url = urljoin(url, match)
-                            parsed = urlparse(absolute_url)
-                            
-                            # Only include same domain
-                            if parsed.netloc == base_domain:
-                                # Clean URL (remove fragments, normalize)
-                                clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-                                if parsed.query:
-                                    clean_url += f"?{parsed.query}"
-                                endpoints.add(clean_url)
-        
-        except Exception as e:
-            pass
-        
-        return endpoints
-    
+        print(f"{Colors.GREEN}[+]{Colors.RESET} Found {len(endpoints)} endpoints for {url}")
+
     async def scan_from_file(self, filepath: str):
-        """Scan all wildcards/URLs from a file"""
-        print(f"[*] Loading targets from: {filepath}")
-        
+        await self.init_session()
+        await self.load_config()
+
+        print(f"{Colors.BLUE}[*]{Colors.RESET} Loading targets from: {filepath}")
         with open(filepath, 'r') as f:
             targets = [line.strip() for line in f if line.strip() and not line.startswith('#')]
-        
-        print(f"[*] Loaded {len(targets)} targets")
-        
+
         all_urls = set()
-        
-        # Process each target
+
         for target in targets:
             if target.startswith('*.'):
-                # It's a wildcard - enumerate subdomains
                 subdomains = await self.enumerate_subdomains(target)
-                for subdomain in subdomains:
-                    all_urls.add(f"http://{subdomain}")
-                    all_urls.add(f"https://{subdomain}")
+                for sd in subdomains:
+                    all_urls.add(f"https://{sd}")
             else:
-                # It's a direct URL
                 if not target.startswith('http'):
                     target = f"https://{target}"
                 all_urls.add(target)
-        
-        print(f"\n[*] Total URLs to scan: {len(all_urls)}")
-        
-        # Discover endpoints for all URLs
-        tasks = []
-        for url in all_urls:
-            tasks.append(self.discover_endpoints(url))
-        
+
+        print(f"{Colors.BLUE}[*]{Colors.RESET} Starting endpoint discovery on {len(all_urls)} URLs...")
+
+        tasks = [self.discover_endpoints(url) for url in all_urls]
         await asyncio.gather(*tasks)
-        
+
     def export_results(self, output_file: str, format='json'):
-        """Export discovered endpoints to file"""
-        print(f"\n[*] Exporting results to: {output_file}")
-        
+        print(f"\n{Colors.BLUE}[*]{Colors.RESET} Exporting results to {output_file}")
+
         if format == 'json':
-            # Convert sets to lists for JSON serialization
             results = {
                 'scan_time': datetime.now().isoformat(),
-                'total_endpoints': sum(len(eps) for eps in self.discovered_endpoints.values()),
                 'total_urls': len(self.discovered_endpoints),
-                'subdomains': list(self.subdomains),
-                'endpoints': {url: list(eps) for url, eps in self.discovered_endpoints.items()}
+                'total_endpoints': sum(len(eps) for eps in self.discovered_endpoints.values()),
+                'subdomains': sorted(self.subdomains),
+                'endpoints': {url: sorted(list(eps)) for url, eps in self.discovered_endpoints.items()}
             }
-            
             with open(output_file, 'w') as f:
                 json.dump(results, f, indent=2)
-        
+
         elif format == 'csv':
             with open(output_file, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['Base URL', 'Endpoint', 'Discovered At'])
-                
-                timestamp = datetime.now().isoformat()
-                for base_url, endpoints in self.discovered_endpoints.items():
-                    for endpoint in endpoints:
-                        writer.writerow([base_url, endpoint, timestamp])
-        
+                writer.writerow(['Base_URL', 'Endpoint'])
+                for base, eps in self.discovered_endpoints.items():
+                    for ep in eps:
+                        writer.writerow([base, ep])
+
         elif format == 'txt':
             with open(output_file, 'w') as f:
-                f.write(f"# Bug Bounty Scan Results\n")
-                f.write(f"# Scan Time: {datetime.now().isoformat()}\n")
-                f.write(f"# Total Endpoints: {sum(len(eps) for eps in self.discovered_endpoints.values())}\n\n")
-                
-                for base_url, endpoints in sorted(self.discovered_endpoints.items()):
-                    f.write(f"\n## {base_url}\n")
-                    for endpoint in sorted(endpoints):
-                        f.write(f"{endpoint}\n")
-        
-        print(f"[+] Results exported successfully!")
-        print(f"[+] Total endpoints found: {sum(len(eps) for eps in self.discovered_endpoints.values())}")
+                f.write(f"Bug Bounty Scan Results - {datetime.now().isoformat()}\n\n")
+                for base, eps in sorted(self.discovered_endpoints.items()):
+                    f.write(f"\n=== {base} ===\n")
+                    for ep in sorted(eps):
+                        f.write(f"{ep}\n")
+
+        print(f"{Colors.GREEN}[+] {Colors.RESET} Export completed! Total endpoints: {sum(len(eps) for eps in self.discovered_endpoints.values())}")
 
 
 async def main():
-    parser = argparse.ArgumentParser(
-        description='Bug Bounty Automated Scanner - Discover subdomains and endpoints',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Scan from a file containing wildcards and URLs
-  python bug_bounty_scanner.py -i targets.txt -o results.json
-  
-  # Custom concurrency and timeout
-  python bug_bounty_scanner.py -i targets.txt -o results.csv -f csv -c 20 -t 15
-  
-  # Export to multiple formats
-  python bug_bounty_scanner.py -i targets.txt -o results.txt -f txt
-        """
-    )
-    
-    parser.add_argument('-i', '--input', required=True, help='Input file with wildcard domains/URLs (one per line)')
-    parser.add_argument('-o', '--output', required=True, help='Output file for results')
-    parser.add_argument('-f', '--format', choices=['json', 'csv', 'txt'], default='json', help='Output format (default: json)')
-    parser.add_argument('-c', '--concurrent', type=int, default=10, help='Max concurrent requests (default: 10)')
-    parser.add_argument('-t', '--timeout', type=int, default=10, help='Request timeout in seconds (default: 10)')
-    parser.add_argument('-u', '--user-agent', help='Custom User-Agent string')
-    
+    parser = argparse.ArgumentParser(description='Bug Bounty Automated Scanner v2.0')
+    parser.add_argument('-i', '--input', required=True, help='Input targets file')
+    parser.add_argument('-o', '--output', required=True, help='Output file')
+    parser.add_argument('-f', '--format', choices=['json', 'csv', 'txt'], default='json')
+    parser.add_argument('-c', '--concurrent', type=int, default=15)
+    parser.add_argument('-t', '--timeout', type=int, default=10)
+    parser.add_argument('-u', '--user-agent')
+
     args = parser.parse_args()
-    
-    print("=" * 60)
-    print("    Bug Bounty Automated Scanner")
-    print("=" * 60)
-    
+
+    print(f"{Colors.GREEN}{'='*70}")
+    print("          Bug Bounty Automated Scanner v2.0")
+    print(f"{'='*70}{Colors.RESET}")
+
     scanner = BugBountyScanner(
         max_concurrent=args.concurrent,
         timeout=args.timeout,
         user_agent=args.user_agent
     )
-    
+
     try:
         await scanner.scan_from_file(args.input)
         scanner.export_results(args.output, args.format)
-        
-        print("\n" + "=" * 60)
-        print("    Scan Complete!")
-        print("=" * 60)
-        
     except KeyboardInterrupt:
-        print("\n[!] Scan interrupted by user")
-        print("[*] Saving partial results...")
+        print(f"\n{Colors.RED}[!]{Colors.RESET} Scan interrupted by user")
         scanner.export_results(args.output, args.format)
     except Exception as e:
-        print(f"[!] Error: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"{Colors.RED}[!] Error: {e}{Colors.RESET}")
+    finally:
+        await scanner.close()
+
+    print(f"\n{Colors.GREEN}{'='*70}")
+    print("                    Scan Complete!")
+    print(f"{'='*70}{Colors.RESET}")
 
 
 if __name__ == '__main__':
