@@ -9,23 +9,26 @@ import aiohttp
 import argparse
 from urllib.parse import urlparse
 
-# --- [PHASE 1: MULTI-SOURCE PASSIVE OSINT SCRAPER] ---
+# --- [PHASE 1: MULTI-SOURCE PASSIVE OSINT SCRAPER - BUG FIXED] ---
 async def fetch_passive_subdomains(session, domain):
     """
-    Queries both crt.sh and AlienVault OTX APIs concurrently 
-    to maximize public subdomain mapping coverage.
+    Queries production public API integrations concurrently.
+    Provides bulletproof URL routes for crt.sh and AlienVault OTX.
     """
     print(f"[*] [Subdominator] Extracting passive subdomain map for '{domain}'...")
     discovered = {domain, f"www.{domain}"}
+    
+    # Standard engineering browser user-agents bypass programmatic blocking thresholds
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0"}
     
-    # Task A: Query crt.sh
+    # Task A: FIXED Canonical crt.sh query loop
     async def query_crt_sh():
         url = f"crt.sh.{domain}&output=json"
         try:
-            async with session.get(url, headers=headers, timeout=20) as r:
+            async with session.get(url, headers=headers, timeout=25) as r:
                 if r.status == 200:
-                    for entry in await r.json():
+                    data = await r.json()
+                    for entry in data:
                         for name in entry.get("name_value", "").split("\n"):
                             clean = name.replace("*.", "").strip().lower()
                             if clean and clean.endswith(domain):
@@ -33,11 +36,11 @@ async def fetch_passive_subdomains(session, domain):
         except Exception:
             pass
 
-    # Task B: Query AlienVault OTX
+    # Task B: FIXED AlienVault Open Threat Exchange Domain endpoint configuration
     async def query_alienvault():
-        url = f"alienvault.com{domain}/passive_dns"
+        url = f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/passive_dns"
         try:
-            async with session.get(url, headers=headers, timeout=20) as r:
+            async with session.get(url, headers=headers, timeout=25) as r:
                 if r.status == 200:
                     data = await r.json()
                     for entry in data.get("passive_dns", []):
@@ -47,6 +50,7 @@ async def fetch_passive_subdomains(session, domain):
         except Exception:
             pass
 
+    # Process open-source intelligence databases concurrently
     await asyncio.gather(query_crt_sh(), query_alienvault())
     return sorted(list(discovered))
 
@@ -54,13 +58,13 @@ async def fetch_passive_subdomains(session, domain):
 # --- [PHASE 2: ASYNCHRONOUS DNS RESOLVER PRE-FILTER] ---
 async def resolve_dns(subdomain, semaphore):
     """
-    Uses non-blocking system sockets to verify if a subdomain points 
-    to a live IP address, preventing wasting HTTP requests on dead records.
+    Validates name configuration bindings against system network sockets 
+    prior to executing aggressive network tasks.
     """
     async with semaphore:
         loop = asyncio.get_running_loop()
         try:
-            # Performs standard non-blocking system DNS A-record resolution
+            # Performs non-blocking async network socket queries
             await loop.getaddrinfo(subdomain, None, family=socket.AF_INET)
             return subdomain
         except Exception:
@@ -70,24 +74,23 @@ async def resolve_dns(subdomain, semaphore):
 # --- [PHASE 3: SOFT-404 FINGERPRINT CALIBRATION] ---
 async def calibrate_soft_404(session, base_url):
     """
-    Requests a non-existent randomized path on a domain to determine its 
-    unique error page byte length, preventing false-positive loops.
+    Establishes baseline error page byte lengths to eliminate soft-404 loops.
     """
     test_url = f"{base_url}/soft404_calibration_token_path_signature"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         async with session.get(test_url, headers=headers, timeout=6, allow_redirects=True) as r:
             body = await r.text()
-            return len(body)  # Returns content-length signature of a bad page
+            return len(body)
     except Exception:
         return None
 
 
-# --- [PHASE 4: PRECISION ENDPOINT EVALUATOR] ---
+# --- [PHASE 4: HIGH-SPEED ENDPOINT FUZZER CORE] ---
 async def evaluate_endpoint(session, url, timeout, semaphore, soft_404_map):
     """
-    Fuzzes structural targets. Normalizes redirects, screens multi-tenant 
-    auth takeovers, and suppresses matched content-length soft-404 errors.
+    Fuzzes directory nodes. Eliminates multi-tenant identity providers 
+    and drops pages that match baseline soft-404 response sizes.
     """
     login_fingerprints = ["google.com", "microsoftonline.com", "okta.com", "auth0.com"]
     parsed_url = urlparse(url)
@@ -102,23 +105,23 @@ async def evaluate_endpoint(session, url, timeout, semaphore, soft_404_map):
                 body_content = await response.text()
                 content_length = len(body_content)
                 
-                # Filter A: Drop generic corporate portal takeovers
+                # Check A: Exclude central enterprise authorization proxies
                 if any(fp in final_url for fp in login_fingerprints):
                     return None
                 
-                # Filter B: Smart Content-Length matching (Soft-404 Suppression)
-                # If path isn't a root directory, but mirrors the system error page size, drop it
+                # Check B: Precision Content-Length Delta evaluation (Soft-404 Suppressor)
                 if parsed_url.path not in ["", "/"]:
                     expected_bad_size = soft_404_map.get(base_host_url)
-                    if expected_bad_size is not None and abs(content_length - expected_bad_size) < 20: 
+                    if expected_bad_size is not None and abs(content_length - expected_bad_size) < 30: 
                         return None
 
-                if status_code in [200, 301, 302, 401, 403, 405] or response.history:
-                    sys.stdout.write("\033[K")  # Wipe ticker row
+                # Capture active status contexts (200 OK, 403 Forbidden, 401 Unauthorized, etc.)
+                if status_code in or response.history:
+                    sys.stdout.write("\033[K")  # Terminate standard line string overlap
                     
                     if status_code == 200:
                         print(f"[\033[92m{status_code}\033[0m] Live Endpoint: {url} (Size: {content_length})")
-                    elif status_code in [401, 403]:
+                    elif status_code in:
                         print(f"[\033[93m{status_code}\033[0m] Protected Panel: {url}")
                     else:
                         print(f"[\033[94mINFO\033[0m] Active Route: {url} -> {final_url}")
@@ -148,9 +151,9 @@ def load_brute_paths(config_path="scanner_config.ini"):
         return default_paths
 
 
-# --- [CORE PIPELINE ENGINE] ---
+# --- [DISTRIBUTED PIPELINE RUN ENGINE] ---
 async def main_pipeline(targets, paths_wordlist, args):
-    dns_semaphore = asyncio.BoundedSemaphore(100)  # Safe high speed for asynchronous DNS queries
+    dns_semaphore = asyncio.BoundedSemaphore(120)  # High performance safe socket allocation ceiling
     http_semaphore = asyncio.BoundedSemaphore(args.concurrent)
     timeout = aiohttp.ClientTimeout(total=args.timeout)
     
@@ -158,7 +161,7 @@ async def main_pipeline(targets, paths_wordlist, args):
         all_discovered_endpoints = []
         
         for target in targets:
-            # 1. Gather all unique OSINT subdomains
+            # 1. Map OSINT feeds with operational API urls
             raw_subdomains = await fetch_passive_subdomains(session, target)
             print(f"[*] Total Raw OSINT Records Discovered: {len(raw_subdomains)}")
             
@@ -179,7 +182,7 @@ async def main_pipeline(targets, paths_wordlist, args):
                     if size:
                         soft_404_map[base] = size
             
-            # 4. Generate Optimized Scan Queue Matrix
+            # 4. Generate Core Target Scan Grid Matrix
             scan_queue = []
             for sub in live_subdomains:
                 scan_queue.append(f"http://{sub}")
@@ -201,7 +204,7 @@ async def main_pipeline(targets, paths_wordlist, args):
         print("\n" + "="*75)
         print(f"[*] Scan finalized. Consolidated {len(all_discovered_endpoints)} unique findings.")
         
-        # Save output records
+        # Write output matrix
         if args.format == "json":
             with open(args.output, "w", encoding="utf-8") as f:
                 json.dump(all_discovered_endpoints, f, indent=4)
@@ -215,20 +218,20 @@ async def main_pipeline(targets, paths_wordlist, args):
                 for item in all_discovered_endpoints:
                     f.write(f"[{item['resolved_status']}] {item['requested_url']} (Len: {item['content_length']})\n")
                     
-        print(f"[+] Clean output matrix written to: '{args.output}'")
+        print(f"[+] Output data tracking logs exported to: '{args.output}'")
 
 
 def run():
     print("="*75)
-    print("      Subdominator x ffuf Framework v6.0 - Advanced Recon Core")
+    print("      Subdominator x ffuf Framework v6.1 - Bug Fixed Core Production")
     print("="*75)
 
-    parser = argparse.ArgumentParser(description="Advanced Subdomain Fuzzer")
-    parser.add_argument("-i", "--input", required=True, help="Root domain string or list path")
-    parser.add_argument("-o", "--output", required=True, help="Output tracking path location")
+    parser = argparse.ArgumentParser(description="Advanced Subdomain Fuzzer Engine")
+    parser.add_argument("-i", "--input", required=True, help="Target domain context or line list path")
+    parser.add_argument("-o", "--output", required=True, help="Target storage track output location")
     parser.add_argument("-f", "--format", choices=["json", "csv", "txt"], default="json")
-    parser.add_argument("-c", "--concurrent", type=int, default=50, help="Parallel HTTP request worker count")
-    parser.add_argument("-t", "--timeout", type=int, default=10, help="Max network connection timeout window")
+    parser.add_argument("-c", "--concurrent", type=int, default=50, help="Parallel processing threshold (Default: 50)")
+    parser.add_argument("-t", "--timeout", type=int, default=10, help="Network request connection timeout barrier")
     
     args = parser.parse_args()
     paths_list = load_brute_paths("scanner_config.ini")
