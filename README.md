@@ -33,7 +33,7 @@ python3 bug_bounty_scanner.py -i target.com -w my_endpoints.txt -c 80 -t 10 -f j
 | Argument | Short | Required | Description |
 |----------|-------|----------|-------------|
 | --input | -i | Yes | Input file with wildcard domains/URLs (one per line) |
-|--wordlists |-w| adding your own wordlists
+|--wordlists |-w|Yes |adding your own wordlists
 | --output | -o | Yes | Output file for results |
 | --format | -f | No | Output format: json, csv, or txt (default: json) |
 | --concurrent | -c | No | Max concurrent requests (default: 10) |
