@@ -6,153 +6,189 @@ import csv
 import asyncio
 import aiohttp
 import argparse
+from urllib.parse import urlparse
 
-# --- [1. SAFE FLAT-TEXT CONFIGURATION PARSER] ---
-def load_scan_configurations(config_path="scanner_config.ini"):
+# --- [1. PASSIVE DNS SCRAPER - THE SUBDOMINATOR PHASE] ---
+async def fetch_passive_subdomains(session, domain):
     """
-    Safely reads raw lines from the config file without crashing on missing sections.
-    Separates subdomains from directory paths based on structural prefixes.
+    Queries public Certificate Transparency logs via crt.sh to find
+    all real, historically valid subdomains dynamically.
     """
-    default_subs = ["www", "mail", "api", "admin", "dev", "staging", "beta", "test", "app"]
-    default_paths = ["/api", "/admin", "/login", "/dashboard", "/.env", "/.git/config"]
+    print(f"[*] [Subdominator Phase] Querying crt.sh API for '{domain}'...")
+    url = f"crt.sh%.{domain}&output=json"
+    discovered = set()
+    discovered.add(domain) # Include root domain
+    discovered.add(f"www.{domain}")
     
-    if not os.path.exists(config_path):
-        print(f"[!] Warning: '{config_path}' not found on disk. Reverting to basic internal defaults.")
-        return default_subs, default_paths
+    try:
+        async with session.get(url, timeout=15) as response:
+            if response.status == 200:
+                try:
+                    data = await response.json()
+                    for entry in data:
+                        name_value = entry.get("name_value", "")
+                        # Handle wildcard notations and clean string noise
+                        names = name_value.split("\n")
+                        for name in names:
+                            clean_name = name.replace("*.", "").strip().lower()
+                            if clean_name and clean_name.endswith(domain):
+                                discovered.add(clean_name)
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[!] Warning: OSINT API connection timed out ({e}). Using core presets.")
+        
+    return list(discovered)
 
+
+# --- [2. FLAT-TEXT WORDLIST INJECTOR - THE FFUF WORDLIST PHASE] ---
+def load_brute_paths(config_path="scanner_config.ini"):
+    """Loads explicit fuzzing paths from local wordlist config file."""
+    default_paths = ["/api", "/admin", "/login", "/dashboard", "/.env", "/.git/config"]
+    if not os.path.exists(config_path):
+        return default_paths
     try:
         with open(config_path, "r", encoding="utf-8") as cfg:
-            lines = [line.strip() for line in cfg if line.strip() and not line.strip().startswith("#")]
-        
-        # Route entries based on URL formatting conventions
-        subdomains = [item for item in lines if not item.startswith("/")]
-        paths = [item for item in lines if item.startswith("/")]
-        
-        subdomains = subdomains if subdomains else default_subs
-        paths = paths if paths else default_paths
-        
-        print(f"[*] Configurations Merged: {len(subdomains)} subdomains & {len(paths)} paths.")
-        return subdomains, paths
-    except Exception as e:
-        print(f"[!] Failed to parse configuration file ({e}). Utilizing fallback lists.")
-        return default_subs, default_paths
+            paths = [line.strip() for line in cfg if line.strip() and line.strip().startswith("/")]
+        return paths if paths else default_paths
+    except Exception:
+        return default_paths
 
 
-# --- [2. ASYNCHRONOUS SCAN WORKER ENGINE] ---
-async def check_endpoint(session, url, timeout, semaphore):
+# --- [3. HIGH-SPEED ENDPOINT EVALUATOR ENGINE] ---
+async def evaluate_endpoint(session, url, timeout, semaphore):
     """
-    Performs a network request against a targeted target endpoint.
-    Leverages a semaphore constraint to prevent overwhelming your connection pipeline.
+    Fuzzes target URL paths. Follows redirects to intercept final destinations,
+    detects multi-tenant login takeovers, and suppresses noise.
     """
+    # Block lists to strip out third-party enterprise login pages (False Positive Killers)
+    login_fingerprints = [
+        "google.com", "google.com", "microsoftonline.com",
+        "okta.com", "pingidentity.com", "auth0.com", "cloudflare.com"
+    ]
+    
     async with semaphore:
         try:
-            # Custom browser agent used to bypass primary string firewall filters
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            async with session.get(url, timeout=timeout, headers=headers, allow_redirects=False) as response:
-                # Print real-time diagnostics straight onto the active command-line interface
-                if response.status == 200:
-                    print(f"[\033[92mLIVE\033[0m] Found: {url} (Status: {response.status})")
-                elif response.status in [301, 302]:
-                    print(f"[\033[94mMOVE\033[0m] Redirect: {url} -> {response.headers.get('Location')}")
-                else:
-                    # Optional diagnostic visibility for non-200 responses
-                    print(f"[\033[90mFAIL\033[0m] Checked: {url} (Status: {response.status})", end="\r")
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"}
+            # allow_redirects=True ensures we verify where the path lands
+            async with session.get(url, timeout=timeout, headers=headers, allow_redirects=True) as response:
+                final_url = str(response.url)
                 
-                return {"url": url, "status": response.status}
-        except asyncio.TimeoutError:
-            return None
+                # Check if target hijacked our scanner path and redirected us to an authentication portal
+                if any(fingerprint in final_url for fingerprint in login_fingerprints):
+                    return None
+                
+                # We only match clean 200 OK responses to mimic ffuf precision matching
+                if response.status == 200:
+                    parsed_final = urlparse(final_url)
+                    parsed_original = urlparse(url)
+                    
+                    # If it redirected from an important path back to a generic landing homepage, skip it
+                    if parsed_final.path in ["", "/"] and parsed_original.path not in ["", "/"]:
+                        return None
+                        
+                    print(f"[\033[92mMATCH\033[0m] Found: {url} -> Status: 200")
+                    return {"url": url, "status": 200, "final_destination": final_url}
+                    
+                else:
+                    # Non-200 responses are compressed into an inline terminal status ticker
+                    print(f"[\033[90mFUZZ\033[0m] {url} ({response.status})", end="\r")
+                    return None
         except Exception:
             return None
 
 
-# --- [3. CORE COORDINATOR RUN LOOP] ---
-async def start_scanner_loop(targets, subdomains, paths, args):
-    """
-    Maps subdomains and asset endpoints into the worker queue.
-    Collects execution metrics asynchronously.
-    """
+# --- [4. DISTRIBUTED EXECUTION PIPELINE ORCHESTRATOR] ---
+async def main_pipeline(targets, paths_wordlist, args):
     semaphore = asyncio.BoundedSemaphore(args.concurrent)
     timeout = aiohttp.ClientTimeout(total=args.timeout)
     
-    # Build complete network targeting matrices
-    scan_queue = []
-    for target in targets:
-        for sub in subdomains:
-            base_url = f"http://{sub}.{target}"
-            scan_queue.append(base_url) # Check the raw subdomain
-            for path in paths:
-                scan_queue.append(f"{base_url}{path}") # Check subdirectory variations
-
-    print(f"[*] Network Scan Queue Constructed: {len(scan_queue)} total target endpoints mapped.")
-    print("[*] Launching async worker engine... (Displaying findings in real-time below)\n")
-
-    findings = []
     async with aiohttp.ClientSession() as session:
-        tasks = [check_endpoint(session, url, timeout, semaphore) for url in scan_queue]
-        results = await asyncio.gather(*tasks)
-        findings = [res for res in results if res is not None]
+        all_discovered_endpoints = []
         
-    print("\n" + "="*75)
-    print(f"[*] Async execution sequence completed. Discovered {len(findings)} responsive configurations.")
-    
-    # --- [4. PERSISTENT STORAGE SERIALIZER] ---
-    if args.format == "json":
-        with open(args.output, "w", encoding="utf-8") as f:
-            json.dump(findings, f, indent=4)
-    elif args.format == "csv":
-        with open(args.output, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["url", "status"])
-            writer.writeheader()
-            writer.writerows(findings)
-    elif args.format == "txt":
-        with open(args.output, "w", encoding="utf-8") as f:
-            for item in findings:
-                f.write(f"[{item['status']}] {item['url']}\n")
-                
-    print(f"[+] Output record successfully compiled: '{args.output}'")
+        for target in targets:
+            # Step A: Execute Subdominator Phase
+            subdomains = await fetch_passive_subdomains(session, target)
+            print(f"[*] [Subdominator Phase] Successfully mapped {len(subdomains)} live subdomains for target: {target}")
+            
+            # Step B: Build Global Scan Matrix
+            scan_queue = []
+            for sub in subdomains:
+                # Seed base target addresses
+                scan_queue.append(f"http://{sub}")
+                scan_queue.append(f"https://{sub}")
+                # Seed directory fuzz targets
+                for path in paths_wordlist:
+                    scan_queue.append(f"http://{sub}{path}")
+                    scan_queue.append(f"https://{sub}{path}")
+            
+            print(f"[*] [ffuf Phase] Combined Target Fuzz Matrix Compiled: {len(scan_queue)} endpoints.")
+            print("[*] Launching async verification workers... \n")
+            
+            # Step C: Execute Concurrent Path Vulnerability Scan Execution
+            tasks = [evaluate_endpoint(session, url, timeout, semaphore) for url in scan_queue]
+            results = await asyncio.gather(*tasks)
+            
+            # Compress verified output tracking records
+            target_findings = [res for res in results if res is not None]
+            all_discovered_endpoints.extend(target_findings)
+            
+        print("\n" + "="*75)
+        print(f"[*] Target evaluation complete. Pipeline captured {len(all_discovered_endpoints)} unique verified live endpoints.")
+        
+        # Save output structured configurations
+        if args.format == "json":
+            with open(args.output, "w", encoding="utf-8") as f:
+                json.dump(all_discovered_endpoints, f, indent=4)
+        elif args.format == "csv":
+            with open(args.output, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=["url", "status", "final_destination"])
+                writer.writeheader()
+                writer.writerows(all_discovered_endpoints)
+        elif args.format == "txt":
+            with open(args.output, "w", encoding="utf-8") as f:
+                for item in all_discovered_endpoints:
+                    f.write(f"[{item['status']}] {item['url']} -> {item['final_destination']}\n")
+                    
+        print(f"[+] Operational log exported completely to: '{args.output}'")
 
 
-# --- [5. INITIALIZATION ENTRY POINT] ---
+# --- [5. ENTRY SYSTEM MANAGER] ---
 def run():
     print("="*75)
-    print("          Bug Bounty Automated Scanner v2.0 - Stabilized Edition")
+    print("          Subdominator x ffuf Unified Scanner v3.0 - Production Core")
     print("="*75)
 
-    parser = argparse.ArgumentParser(description="Automated Async Bug Bounty Scanner Engine")
-    parser.add_argument("-i", "--input", required=True, help="Domain context (doximity.com) OR list path")
-    parser.add_argument("-o", "--output", required=True, help="Output storage file target route")
-    parser.add_argument("-f", "--format", choices=["json", "csv", "txt"], default="json", help="Serialization schema format")
-    parser.add_argument("-c", "--concurrent", type=int, default=5, help="Async concurrent semaphore threshold")
-    parser.add_argument("-t", "--timeout", type=int, default=5, help="Network timeout barrier")
+    parser = argparse.ArgumentParser(description="Subdominator + ffuf Combined Enterprise Web Asset Pipeline")
+    parser.add_argument("-i", "--input", required=True, help="Domain context string or asset list path")
+    parser.add_argument("-o", "--output", required=True, help="Target storage track output data location")
+    parser.add_argument("-f", "--format", choices=["json", "csv", "txt"], default="json")
+    parser.add_argument("-c", "--concurrent", type=int, default=30, help="Parallel session limit. Default: 30")
+    parser.add_argument("-t", "--timeout", type=int, default=6, help="Timeout maximum boundary edge limit")
     
     args = parser.parse_args()
     
-    # Extract line configurations using our flat array tracker fix
-    subdomains_list, paths_list = load_scan_configurations("scanner_config.ini")
+    # Load dictionary assets safely
+    paths_list = load_brute_paths("scanner_config.ini")
     
-    # Validate raw CLI inputs vs file mapping frameworks
     target_source = args.input.strip()
     targets = []
     
     if os.path.isfile(target_source):
-        print(f"[*] Importing target array from local registry path: {target_source}")
         with open(target_source, "r", encoding="utf-8") as f:
             targets = [line.strip() for line in f if line.strip()]
     else:
-        print(f"[*] Target parsed natively from raw command-line string parameter.")
         targets = [target_source]
         
     if not targets:
-        print("[!] Execution Failure: Empty target resolution queue map layout.")
+        print("[!] Operational Error: No targets selected.")
         sys.exit(1)
         
-    print(f"[*] Targeting Scope: {targets}")
-    
-    # Bridge variables straight into the underlying asyncio processing environment
-    asyncio.run(start_scanner_loop(targets, subdomains_list, paths_list, args))
+    # Launch structural orchestration sequence loops
+    asyncio.run(main_pipeline(targets, paths_list, args))
     
     print("="*75)
-    print("                    Scan Complete! 🎯")
+    print("                    Execution Pipeline Complete! 🎯")
     print("="*75)
 
 if __name__ == "__main__":
