@@ -4,105 +4,132 @@ import sys
 import json
 import csv
 import asyncio
+import socket
 import aiohttp
 import argparse
 from urllib.parse import urlparse
 
-# --- [1. DYNAMIC OSINT SUBDOMAIN DISCOVERY] ---
+# --- [PHASE 1: MULTI-SOURCE PASSIVE OSINT SCRAPER] ---
 async def fetch_passive_subdomains(session, domain):
     """
-    Queries public Certificate Transparency logs via crt.sh API.
-    Extracts every publicly registered subdomain dynamically.
+    Queries both crt.sh and AlienVault OTX APIs concurrently 
+    to maximize public subdomain mapping coverage.
     """
-    print(f"[*] [Subdominator Phase] Extracting full subdomain map for '{domain}'...")
-    
-    # FIXED: Absolute canonical URL format for the crt.sh JSON endpoint
-    url = f"https://crt.sh/?q=%25.{domain}&output=json"
-    
-    discovered = set()
-    discovered.add(domain)       # Seed root target
-    discovered.add(f"www.{domain}")
-    
-    # Custom headers protect against programmatic dropping rules on crt.sh
+    print(f"[*] [Subdominator] Extracting passive subdomain map for '{domain}'...")
+    discovered = {domain, f"www.{domain}"}
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0"}
     
-    try:
-        async with session.get(url, headers=headers, timeout=30) as response:
-            if response.status == 200:
-                try:
-                    data = await response.json()
-                    for entry in data:
-                        name_value = entry.get("name_value", "")
-                        for name in name_value.split("\n"):
-                            clean_name = name.replace("*.", "").strip().lower()
-                            if clean_name and clean_name.endswith(domain):
-                                discovered.add(clean_name)
-                except Exception:
-                    pass
-            else:
-                print(f"[!] Target API gave unexpected status: {response.status}. Using local arrays.")
-    except Exception as e:
-        print(f"[!] Warning: Passive OSINT lookup timed out ({e}). Utilizing preset defaults.")
-        
+    # Task A: Query crt.sh
+    async def query_crt_sh():
+        url = f"crt.sh.{domain}&output=json"
+        try:
+            async with session.get(url, headers=headers, timeout=20) as r:
+                if r.status == 200:
+                    for entry in await r.json():
+                        for name in entry.get("name_value", "").split("\n"):
+                            clean = name.replace("*.", "").strip().lower()
+                            if clean and clean.endswith(domain):
+                                discovered.add(clean)
+        except Exception:
+            pass
+
+    # Task B: Query AlienVault OTX
+    async def query_alienvault():
+        url = f"alienvault.com{domain}/passive_dns"
+        try:
+            async with session.get(url, headers=headers, timeout=20) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    for entry in data.get("passive_dns", []):
+                        hostname = entry.get("hostname", "").strip().lower()
+                        if hostname and hostname.endswith(domain):
+                            discovered.add(hostname)
+        except Exception:
+            pass
+
+    await asyncio.gather(query_crt_sh(), query_alienvault())
     return sorted(list(discovered))
 
 
-# --- [2. DIRECTORY PAYLOAD WORDLIST INJECTOR] ---
-def load_brute_paths(config_path="scanner_config.ini"):
-    """Loads fuzzing tracks from text configuration lists."""
-    default_paths = ["/api", "/admin", "/login", "/dashboard", "/.env", "/.git/config"]
-    if not os.path.exists(config_path):
-        return default_paths
+# --- [PHASE 2: ASYNCHRONOUS DNS RESOLVER PRE-FILTER] ---
+async def resolve_dns(subdomain, semaphore):
+    """
+    Uses non-blocking system sockets to verify if a subdomain points 
+    to a live IP address, preventing wasting HTTP requests on dead records.
+    """
+    async with semaphore:
+        loop = asyncio.get_running_loop()
+        try:
+            # Performs standard non-blocking system DNS A-record resolution
+            await loop.getaddrinfo(subdomain, None, family=socket.AF_INET)
+            return subdomain
+        except Exception:
+            return None
+
+
+# --- [PHASE 3: SOFT-404 FINGERPRINT CALIBRATION] ---
+async def calibrate_soft_404(session, base_url):
+    """
+    Requests a non-existent randomized path on a domain to determine its 
+    unique error page byte length, preventing false-positive loops.
+    """
+    test_url = f"{base_url}/soft404_calibration_token_path_signature"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
-        with open(config_path, "r", encoding="utf-8") as cfg:
-            paths = [line.strip() for line in cfg if line.strip() and line.strip().startswith("/")]
-        return paths if paths else default_paths
+        async with session.get(test_url, headers=headers, timeout=6, allow_redirects=True) as r:
+            body = await r.text()
+            return len(body)  # Returns content-length signature of a bad page
     except Exception:
-        return default_paths
+        return None
 
 
-# --- [3. HIGH-SPEED ENDPOINT FUZZER CORE] ---
-async def evaluate_endpoint(session, url, timeout, semaphore):
+# --- [PHASE 4: PRECISION ENDPOINT EVALUATOR] ---
+async def evaluate_endpoint(session, url, timeout, semaphore, soft_404_map):
     """
-    Evaluates subdomains and paths. Returns and tracks responses 
-    (200, 301, 302, 403) to ensure total visibility of the attack surface.
+    Fuzzes structural targets. Normalizes redirects, screens multi-tenant 
+    auth takeovers, and suppresses matched content-length soft-404 errors.
     """
-    # Exclude external generic multi-tenant single sign-on loops
-    login_fingerprints = [
-        "google.com", "microsoftonline.com", "okta.com", "auth0.com"
-    ]
+    login_fingerprints = ["google.com", "microsoftonline.com", "okta.com", "auth0.com"]
+    parsed_url = urlparse(url)
+    base_host_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
     
     async with semaphore:
         try:
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            # allow_redirects=True maps out where hidden endpoints ultimately lead
             async with session.get(url, timeout=timeout, headers=headers, allow_redirects=True) as response:
                 final_url = str(response.url)
                 status_code = response.status
+                body_content = await response.text()
+                content_length = len(body_content)
                 
-                if any(fingerprint in final_url for fingerprint in login_fingerprints):
+                # Filter A: Drop generic corporate portal takeovers
+                if any(fp in final_url for fp in login_fingerprints):
                     return None
                 
-                # RECON STRATEGY: Capture 200 OK, 403 Forbidden, and 401 Unauthorized codes
-                if status_code in [200, 401, 403] or response.history:
-                    # Clear inline terminal buffering remnants
-                    sys.stdout.write("\033[K")
+                # Filter B: Smart Content-Length matching (Soft-404 Suppression)
+                # If path isn't a root directory, but mirrors the system error page size, drop it
+                if parsed_url.path not in ["", "/"]:
+                    expected_bad_size = soft_404_map.get(base_host_url)
+                    if expected_bad_size is not None and abs(content_length - expected_bad_size) < 20: 
+                        return None
+
+                if status_code in [200, 301, 302, 401, 403, 405] or response.history:
+                    sys.stdout.write("\033[K")  # Wipe ticker row
                     
-                    # Highlight operational status values visually
                     if status_code == 200:
-                        print(f"[\033[92m{status_code}\033[0m] Live Endpoint: {url}")
+                        print(f"[\033[92m{status_code}\033[0m] Live Endpoint: {url} (Size: {content_length})")
                     elif status_code in [401, 403]:
-                        print(f"[\033[93m{status_code}\033[0m] Restricted Access: {url}")
+                        print(f"[\033[93m{status_code}\033[0m] Protected Panel: {url}")
                     else:
-                        print(f"[\033[94mINFO\033[0m] Path Active: {url} -> Leads to: {final_url}")
+                        print(f"[\033[94mINFO\033[0m] Active Route: {url} -> {final_url}")
                         
                     return {
                         "requested_url": url,
                         "resolved_status": status_code,
+                        "content_length": content_length,
                         "final_destination": final_url
                     }
                 else:
-                    # Dynamic console logging update tracker
                     sys.stdout.write(f"[\033[90mFUZZ\033[0m] Analyzing: {url} ({status_code})\033[K\r")
                     sys.stdout.flush()
                     return None
@@ -110,93 +137,110 @@ async def evaluate_endpoint(session, url, timeout, semaphore):
             return None
 
 
-# --- [4. AGGREGATED PIPELINE ENGINE] ---
+def load_brute_paths(config_path="scanner_config.ini"):
+    default_paths = ["/api", "/admin", "/login", "/dashboard", "/.env", "/.git/config"]
+    if not os.path.exists(config_path):
+        return default_paths
+    try:
+        with open(config_path, "r", encoding="utf-8") as cfg:
+            return [line.strip() for line in cfg if line.strip() and line.strip().startswith("/")]
+    except Exception:
+        return default_paths
+
+
+# --- [CORE PIPELINE ENGINE] ---
 async def main_pipeline(targets, paths_wordlist, args):
-    semaphore = asyncio.BoundedSemaphore(args.concurrent)
+    dns_semaphore = asyncio.BoundedSemaphore(100)  # Safe high speed for asynchronous DNS queries
+    http_semaphore = asyncio.BoundedSemaphore(args.concurrent)
     timeout = aiohttp.ClientTimeout(total=args.timeout)
     
     async with aiohttp.ClientSession() as session:
         all_discovered_endpoints = []
         
         for target in targets:
-            # Step A: Enumerate full subdomain layout via OSINT
-            subdomains = await fetch_passive_subdomains(session, target)
-            print(f"[*] [Subdominator Phase] Discovered {len(subdomains)} unique public subdomains for: {target}")
+            # 1. Gather all unique OSINT subdomains
+            raw_subdomains = await fetch_passive_subdomains(session, target)
+            print(f"[*] Total Raw OSINT Records Discovered: {len(raw_subdomains)}")
             
-            # Step B: Compile comprehensive mapping arrays (Checks both HTTP and HTTPS variations)
+            # 2. Run Asynchronous DNS Resolution Pre-Filter
+            print("[*] Filtering out dead entries using Async DNS Resolvers...")
+            dns_tasks = [resolve_dns(sub, dns_semaphore) for sub in raw_subdomains]
+            resolved_results = await asyncio.gather(*dns_tasks)
+            live_subdomains = [sub for sub in resolved_results if sub is not None]
+            print(f"[*] [\033[92mDNS SUCCESS\033[0m] Mapped {len(live_subdomains)}/{len(raw_subdomains)} live domains.")
+            
+            # 3. Dynamic Soft-404 / Fingerprinting Calibration
+            print("[*] Calibrating server response fingerprints...")
+            soft_404_map = {}
+            for sub in live_subdomains:
+                for schema in ["http", "https"]:
+                    base = f"{schema}://{sub}"
+                    size = await calibrate_soft_404(session, base)
+                    if size:
+                        soft_404_map[base] = size
+            
+            # 4. Generate Optimized Scan Queue Matrix
             scan_queue = []
-            for sub in subdomains:
-                # Add base subdomains directly into the check queue
+            for sub in live_subdomains:
                 scan_queue.append(f"http://{sub}")
                 scan_queue.append(f"https://{sub}")
-                
-                # Append targeted fuzz paths against every discovered subdomain
                 for path in paths_wordlist:
                     scan_queue.append(f"http://{sub}{path}")
                     scan_queue.append(f"https://{sub}{path}")
             
-            print(f"[*] [ffuf Phase] Scanning Matrix: {len(scan_queue)} endpoints queued for validation.")
+            print(f"[*] [ffuf Module] Matrix compiled: {len(scan_queue)} optimized paths queued.")
             print("[*] Launching async verification workers... \n")
             
-            # Step C: Parallel batch request execution
-            tasks = [evaluate_endpoint(session, url, timeout, semaphore) for url in scan_queue]
+            # 5. Execute Fuzzing Matrix Pass
+            tasks = [evaluate_endpoint(session, url, timeout, http_semaphore, soft_404_map) for url in scan_queue]
             results = await asyncio.gather(*tasks)
             
-            target_findings = [res for res in results if res is not None]
-            all_discovered_endpoints.extend(target_findings)
+            all_discovered_endpoints.extend([res for res in results if res is not None])
             
-        sys.stdout.write("\033[K") # Flush trailing terminal text strings
+        sys.stdout.write("\033[K")
         print("\n" + "="*75)
-        print(f"[*] Recon complete. Pipeline mapped {len(all_discovered_endpoints)} valid targets.")
+        print(f"[*] Scan finalized. Consolidated {len(all_discovered_endpoints)} unique findings.")
         
-        # Save complete finding matrix
+        # Save output records
         if args.format == "json":
             with open(args.output, "w", encoding="utf-8") as f:
                 json.dump(all_discovered_endpoints, f, indent=4)
         elif args.format == "csv":
             with open(args.output, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=["requested_url", "resolved_status", "final_destination"])
+                writer = csv.DictWriter(f, fieldnames=["requested_url", "resolved_status", "content_length", "final_destination"])
                 writer.writeheader()
                 writer.writerows(all_discovered_endpoints)
         elif args.format == "txt":
             with open(args.output, "w", encoding="utf-8") as f:
                 for item in all_discovered_endpoints:
-                    f.write(f"[{item['resolved_status']}] {item['requested_url']} -> {item['final_destination']}\n")
+                    f.write(f"[{item['resolved_status']}] {item['requested_url']} (Len: {item['content_length']})\n")
                     
-        print(f"[+] Output logs saved completely to: '{args.output}'")
+        print(f"[+] Clean output matrix written to: '{args.output}'")
 
 
-# --- [5. ENTRY POINT EXECUTION CONTROLLER] ---
 def run():
     print("="*75)
-    print("          Subdominator x ffuf Unified Recon Engine v5.0")
+    print("      Subdominator x ffuf Framework v6.0 - Advanced Recon Core")
     print("="*75)
 
-    parser = argparse.ArgumentParser(description="Subdominator + ffuf Full-Scale Target Recon Pipeline")
-    parser.add_argument("-i", "--input", required=True, help="Target domain context or line list path")
-    parser.add_argument("-o", "--output", required=True, help="Target storage track output location")
+    parser = argparse.ArgumentParser(description="Advanced Subdomain Fuzzer")
+    parser.add_argument("-i", "--input", required=True, help="Root domain string or list path")
+    parser.add_argument("-o", "--output", required=True, help="Output tracking path location")
     parser.add_argument("-f", "--format", choices=["json", "csv", "txt"], default="json")
-    parser.add_argument("-c", "--concurrent", type=int, default=50, help="Parallel processing threshold (Default: 50)")
-    parser.add_argument("-t", "--timeout", type=int, default=10, help="Network request connection timeout barrier")
+    parser.add_argument("-c", "--concurrent", type=int, default=50, help="Parallel HTTP request worker count")
+    parser.add_argument("-t", "--timeout", type=int, default=10, help="Max network connection timeout window")
     
     args = parser.parse_args()
-    
     paths_list = load_brute_paths("scanner_config.ini")
-    target_source = args.input.strip()
-    targets = []
     
-    if os.path.isfile(target_source):
-        with open(target_source, "r", encoding="utf-8") as f:
-            targets = [line.strip() for line in f if line.strip()]
-    else:
-        targets = [target_source]
-        
+    target_source = args.input.strip()
+    targets = [target_source] if not os.path.isfile(target_source) else [line.strip() for line in open(target_source, "r", encoding="utf-8") if line.strip()]
+    
     if not targets:
-        print("[!] Operational Error: No targets parsed.")
+        print("[!] Error: Target scope parsed empty.")
         sys.exit(1)
         
     asyncio.run(main_pipeline(targets, paths_list, args))
-    
     print("="*75)
     print("                    Execution Pipeline Complete! 🎯")
     print("="*75)
