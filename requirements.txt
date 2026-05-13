@@ -1,2 +1,2 @@
 aiohttp>=3.9.0
-asyncio
+colorama>=0.4.6    # Better colors on Windows
