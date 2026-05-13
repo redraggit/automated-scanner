@@ -6,11 +6,12 @@ import csv
 import asyncio
 import aiohttp
 import argparse
+from urllib.parse import urlparse
 
 # --- [PHASE 1: MULTI-SOURCE PASSIVE OSINT ENGINE] ---
 async def fetch_passive_subdomains(session, domain):
     """
-    Queries public production API integrations concurrently.
+    Queries production public API integrations concurrently.
     Extracts the complete public subdomain infrastructure from crt.sh and AlienVault.
     """
     print(f"[*] [Subdominator] Extracting comprehensive passive subdomain map for '{domain}'...")
@@ -19,9 +20,9 @@ async def fetch_passive_subdomains(session, domain):
     # Custom headers to bypass programmatic dropping rules on OSINT platforms
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0"}
     
-    # Source A: crt.sh API Query
+    # Source A: crt.sh API Query (Fixed String Schema)
     async def query_crt_sh():
-        url = f"crt.sh.{domain}&output=json"
+        url = f"https://crt.sh.{domain}&output=json"
         try:
             async with session.get(url, headers=headers, timeout=30) as r:
                 if r.status == 200:
@@ -34,9 +35,9 @@ async def fetch_passive_subdomains(session, domain):
         except Exception:
             pass
 
-    # Source B: AlienVault OTX Passive DNS Query
+    # Source B: AlienVault OTX Passive DNS Query (Fixed API Route)
     async def query_alienvault():
-        url = f"alienvault.com{domain}/passive_dns"
+        url = f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/passive_dns"
         try:
             async with session.get(url, headers=headers, timeout=30) as r:
                 if r.status == 200:
@@ -177,7 +178,7 @@ async def main_pipeline(targets, paths_wordlist, args):
 
 def run():
     print("="*75)
-    print("          Subdominator x ffuf Framework v7.1 - Final Fixed Core")
+    print("          Subdominator x ffuf Framework v8.0 - Final Production Core")
     print("="*75)
 
     parser = argparse.ArgumentParser(description="Subdominator + ffuf Unified Enterprise Web Asset Pipeline")
