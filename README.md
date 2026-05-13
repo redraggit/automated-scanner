@@ -25,7 +25,7 @@ pip install -r requirements.txt
 ### Basic Usage
 
 ```bash
-python bug_bounty_scanner.py -i targets.txt -o results.json
+python3 bug_bounty_scanner.py -i target.com -w my_endpoints.txt -c 80 -t 10 -f json -o professional_recon.json
 ```
 
 ### Advanced Options
@@ -49,6 +49,7 @@ python bug_bounty_scanner.py -i targets.txt -o results.txt -f txt
 | Argument | Short | Required | Description |
 |----------|-------|----------|-------------|
 | --input | -i | Yes | Input file with wildcard domains/URLs (one per line) |
+|--WORDLISTS |-w| adding your own wordlists
 | --output | -o | Yes | Output file for results |
 | --format | -f | No | Output format: json, csv, or txt (default: json) |
 | --concurrent | -c | No | Max concurrent requests (default: 10) |
