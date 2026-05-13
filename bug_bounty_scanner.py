@@ -9,7 +9,7 @@ import aiohttp
 import argparse
 from urllib.parse import urlparse
 
-# --- [PHASE 1: MULTI-SOURCE PASSIVE OSINT SCRAPER - BUG FIXED] ---
+# --- [PHASE 1: MULTI-SOURCE PASSIVE OSINT SCRAPER] ---
 async def fetch_passive_subdomains(session, domain):
     """
     Queries production public API integrations concurrently.
@@ -21,7 +21,7 @@ async def fetch_passive_subdomains(session, domain):
     # Standard engineering browser user-agents bypass programmatic blocking thresholds
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0"}
     
-    # Task A: FIXED Canonical crt.sh query loop
+    # Task A: Canonical crt.sh query loop
     async def query_crt_sh():
         url = f"crt.sh.{domain}&output=json"
         try:
@@ -36,9 +36,9 @@ async def fetch_passive_subdomains(session, domain):
         except Exception:
             pass
 
-    # Task B: FIXED AlienVault Open Threat Exchange Domain endpoint configuration
+    # Task B: AlienVault Open Threat Exchange Domain endpoint configuration
     async def query_alienvault():
-        url = f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/passive_dns"
+        url = f"alienvault.com{domain}/passive_dns"
         try:
             async with session.get(url, headers=headers, timeout=25) as r:
                 if r.status == 200:
@@ -115,13 +115,13 @@ async def evaluate_endpoint(session, url, timeout, semaphore, soft_404_map):
                     if expected_bad_size is not None and abs(content_length - expected_bad_size) < 30: 
                         return None
 
-                # Capture active status contexts (200 OK, 403 Forbidden, 401 Unauthorized, etc.)
-                if status_code in or response.history:
+                # Capture active status contexts (200 OK, 301/302 Redirects, 401 Unauthorized, 403 Forbidden, 405 Method Not Allowed)
+                if status_code in [200, 301, 302, 401, 403, 405] or response.history:
                     sys.stdout.write("\033[K")  # Terminate standard line string overlap
                     
                     if status_code == 200:
                         print(f"[\033[92m{status_code}\033[0m] Live Endpoint: {url} (Size: {content_length})")
-                    elif status_code in:
+                    elif status_code in [401, 403]:
                         print(f"[\033[93m{status_code}\033[0m] Protected Panel: {url}")
                     else:
                         print(f"[\033[94mINFO\033[0m] Active Route: {url} -> {final_url}")
@@ -165,6 +165,10 @@ async def main_pipeline(targets, paths_wordlist, args):
             raw_subdomains = await fetch_passive_subdomains(session, target)
             print(f"[*] Total Raw OSINT Records Discovered: {len(raw_subdomains)}")
             
+            if not raw_subdomains:
+                print(f"[!] Warning: No subdomains retrieved for {target}.")
+                continue
+
             # 2. Run Asynchronous DNS Resolution Pre-Filter
             print("[*] Filtering out dead entries using Async DNS Resolvers...")
             dns_tasks = [resolve_dns(sub, dns_semaphore) for sub in raw_subdomains]
@@ -172,6 +176,10 @@ async def main_pipeline(targets, paths_wordlist, args):
             live_subdomains = [sub for sub in resolved_results if sub is not None]
             print(f"[*] [\033[92mDNS SUCCESS\033[0m] Mapped {len(live_subdomains)}/{len(raw_subdomains)} live domains.")
             
+            if not live_subdomains:
+                print("[!] Warning: Zero active subdomains resolved online via DNS.")
+                continue
+
             # 3. Dynamic Soft-404 / Fingerprinting Calibration
             print("[*] Calibrating server response fingerprints...")
             soft_404_map = {}
@@ -223,7 +231,7 @@ async def main_pipeline(targets, paths_wordlist, args):
 
 def run():
     print("="*75)
-    print("      Subdominator x ffuf Framework v6.1 - Bug Fixed Core Production")
+    print("      Subdominator x ffuf Framework v6.2 - Clean Stable Production")
     print("="*75)
 
     parser = argparse.ArgumentParser(description="Advanced Subdomain Fuzzer Engine")
