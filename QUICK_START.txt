@@ -1,0 +1,133 @@
+🚀 QUICK START GUIDE
+==================
+
+Bug Bounty Automated Scanner - Get started in 3 steps!
+
+STEP 1: Install Dependencies
+-----------------------------
+pip install -r requirements.txt
+
+
+STEP 2: Create Your Targets File
+---------------------------------
+Edit targets.txt and add your bug bounty program wildcards/URLs:
+
+Example:
+  *.example.com
+  *.hackerone.com
+  https://api.bugcrowd.com
+
+
+STEP 3: Run the Scanner
+-----------------------
+python bug_bounty_scanner.py -i targets.txt -o results.json
+
+
+STEP 4 (Optional): Analyze Results
+-----------------------------------
+python analyze_results.py -i results.json -o priority_targets.txt
+
+
+📖 COMMON COMMANDS
+==================
+
+# Basic scan
+python bug_bounty_scanner.py -i targets.txt -o results.json
+
+# Fast scan (high concurrency)
+python bug_bounty_scanner.py -i targets.txt -o results.json -c 20 -t 5
+
+# Careful scan (low concurrency, longer timeout)
+python bug_bounty_scanner.py -i targets.txt -o results.json -c 5 -t 15
+
+# Export to CSV for Excel
+python bug_bounty_scanner.py -i targets.txt -o results.csv -f csv
+
+# Export to readable text file
+python bug_bounty_scanner.py -i targets.txt -o results.txt -f txt
+
+# Analyze and find interesting endpoints
+python analyze_results.py -i results.json
+
+# Export high-priority targets
+python analyze_results.py -i results.json -o high_priority.txt
+
+
+🎯 WHAT GETS SCANNED
+====================
+
+Subdomains (from wildcards):
+  ✓ Common patterns: www, api, admin, dev, staging, etc.
+  ✓ 40+ subdomain patterns tested
+
+Endpoints (for each URL):
+  ✓ API endpoints: /api, /api/v1, /api/v2, /graphql
+  ✓ Admin areas: /admin, /dashboard, /panel
+  ✓ Auth: /login, /auth, /oauth, /token
+  ✓ Config files: /.env, /.git, /config.json
+  ✓ Documentation: /docs, /swagger, /api-docs
+  ✓ 40+ endpoint patterns tested
+
+
+📊 OUTPUT FORMATS
+=================
+
+JSON (default):
+  - Structured data with all details
+  - Best for further processing
+  - Can be piped to other tools
+
+CSV:
+  - Easy to import into Excel/Google Sheets
+  - Good for reporting
+  - Simple tabular format
+
+TXT:
+  - Human-readable
+  - Easy to grep/search
+  - Good for documentation
+
+
+⚠️  IMPORTANT NOTES
+===================
+
+✅ Only scan targets you have permission to test
+✅ Be respectful - use appropriate rate limiting
+✅ Always verify findings manually
+✅ False positives are possible
+✅ This is a reconnaissance tool, not an exploitation tool
+
+
+🔧 TROUBLESHOOTING
+==================
+
+Scan too slow?
+  → Increase concurrency: -c 20
+
+Getting timeouts?
+  → Increase timeout: -t 15
+  → Decrease concurrency: -c 5
+
+No results found?
+  → Check your targets file format
+  → Try increasing timeout
+  → Verify DNS is working
+
+Need help?
+  → Check README.md for full documentation
+  → Run with -h flag for options
+
+
+📁 FILES INCLUDED
+=================
+
+bug_bounty_scanner.py   - Main scanner tool
+analyze_results.py      - Results analyzer
+targets.txt            - Example targets file (edit this!)
+scanner_config.ini     - Configuration file (optional)
+requirements.txt       - Python dependencies
+README.md             - Full documentation
+QUICK_START.txt       - This file
+
+
+Happy hunting! 🎯

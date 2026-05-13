@@ -1,0 +1,14 @@
+# Bug Bounty Targets
+# Format: One target per line
+# Wildcards: *.example.com
+# Direct URLs: example.com or https://example.com
+# Comments start with #
+
+# Wildcard domains (will enumerate subdomains)
+*.example.com
+*.testsite.org
+
+# Direct URLs
+https://api.example.com
+https://app.example.com
+admin.testsite.org
