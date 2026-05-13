@@ -7,41 +7,39 @@ import asyncio
 import aiohttp
 import argparse
 
-# --- [STAGE 1: DYNAMIC MULTI-SOURCE SUBDOMAIN DISCOVERY] ---
+# --- [STAGE 1: ADVANCED MULTI-FEED OSINT SUBDOMAIN MINER] ---
 async def fetch_passive_subdomains(session, domain):
     """
-    Queries production public API integrations concurrently.
-    FIXED: Formatted canonical API request routes for crt.sh and AlienVault OTX.
+    Queries three distinct public intelligence platforms concurrently.
+    Provides explicit error protection blocks so one failing API won't kill the scan.
     """
-    print(f"[*] [Stage 1: Subdominator] Mining public subdomains for '{domain}'...")
+    print(f"[*] [Stage 1: Subdominator] Initiating multi-source OSINT mining loop for '{domain}'...")
     discovered = {domain, f"www.{domain}"}
     
-    # Modern browser user-agent string prevents automated script blocking drops
+    # Modern browser user-agent bypasses programmatic edge filtering rules
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0"}
     
-    # Source A: FIXED crt.sh URL endpoint query structure
+    # Source A: Fixed Canonical Certificate Transparency Log API
     async def query_crt_sh():
-        url = f"https://crt.sh/?q=%25.{domain}&output=json"
+        url = f"crt.sh.{domain}&output=json"
         try:
-            async with session.get(url, headers=headers, timeout=40) as r:
+            async with session.get(url, headers=headers, timeout=30) as r:
                 if r.status == 200:
                     data = await r.json()
                     for entry in data:
                         name_value = entry.get("name_value", "")
-                        # Split embedded multi-domain strings containing spaces or newlines
-                        raw_names = name_value.replace(" ", "\n").split("\n")
-                        for name in raw_names:
+                        for name in name_value.replace(" ", "\n").split("\n"):
                             clean = name.replace("*.", "").strip().lower()
                             if clean and clean.endswith(domain):
                                 discovered.add(clean)
         except Exception:
             pass
 
-    # Source B: FIXED AlienVault Open Threat Exchange route mapping
+    # Source B: Fixed LevelBlue / AlienVault Open Threat Exchange Route
     async def query_alienvault():
         url = f"alienvault.com{domain}/passive_dns"
         try:
-            async with session.get(url, headers=headers, timeout=40) as r:
+            async with session.get(url, headers=headers, timeout=30) as r:
                 if r.status == 200:
                     data = await r.json()
                     for entry in data.get("passive_dns", []):
@@ -51,20 +49,34 @@ async def fetch_passive_subdomains(session, domain):
         except Exception:
             pass
 
-    # Process open-source intelligence databases concurrently
-    await asyncio.gather(query_crt_sh(), query_alienvault())
+    # Source C: Advanced Non-Collision Subdomain Indexer Integration
+    async def query_anubis():
+        url = f"jldc.me{domain}"
+        try:
+            async with session.get(url, headers=headers, timeout=30) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    for sub in data:
+                        clean = sub.strip().lower()
+                        if clean and clean.endswith(domain):
+                            discovered.add(clean)
+        except Exception:
+            pass
+
+    # Execute all open-source intelligence databases concurrently inside safe wrappers
+    await asyncio.gather(query_crt_sh(), query_alienvault(), query_anubis())
     return sorted(list(discovered))
 
 
 # --- [STAGE 2: HIGH-SPEED ENDPOINT RECON MODULE] ---
 async def evaluate_endpoint(session, url, timeout, semaphore):
     """
-    Evaluates subdomains and paths directly. Tracks status codes 
-    (200, 301, 302, 401, 403, 405) to map the absolute scope of the target asset.
+    Fuzzes targets directly. Monitors and displays all structural responses 
+    (200, 301, 302, 401, 403, 405) live in your active terminal frame.
     """
-    # Exclude external generic multi-tenant single sign-on loops
+    # Exclude external generic multi-tenant single sign-on redirect tracks
     login_fingerprints = ["google.com", "microsoftonline.com", "okta.com", "auth0.com"]
-    target_statuses = [200, 301, 302, 401, 403, 405]
+    target_statuses = [200, 301, 302, 401, 403, 405, 406]
     
     async with semaphore:
         try:
@@ -81,16 +93,16 @@ async def evaluate_endpoint(session, url, timeout, semaphore):
                 if any(fingerprint in final_url for fingerprint in login_fingerprints):
                     return None
                 
-                # Capture specified target response behaviors or active redirect tracks
+                # Filter out raw 404 drops to preserve high-yield screen real estate
                 if status_code in target_statuses or response.history:
-                    sys.stdout.write("\033[K")  # Terminate standard line string overlap
+                    sys.stdout.write("\033[K")  # Wipe ticker artifacts
                     
                     if status_code == 200:
                         print(f"[\033[92m{status_code}\033[0m] Live Endpoint: {url} (Size: {content_length})")
-                    elif status_code in [401, 403]:
-                        print(f"[\033[93m{status_code}\033[0m] Restricted Access: {url}")
+                    elif status_code in [401, 403, 406]:
+                        print(f"[\033[93m{status_code}\033[0m] Protected Asset: {url}")
                     else:
-                        print(f"[\033[94mINFO\033[0m] Path Active: {url} -> Leads to: {final_url} ({status_code})")
+                        print(f"[\033[94mINFO\033[0m] Active Redirection: {url} -> {final_url} ({status_code})")
                         
                     return {
                         "requested_url": url,
@@ -99,7 +111,7 @@ async def evaluate_endpoint(session, url, timeout, semaphore):
                         "final_destination": final_url
                     }
                 else:
-                    # Dynamic console logging string update engine
+                    # Compressed line tracker keeps terminal interface updates clean
                     sys.stdout.write(f"[\033[90mFUZZ\033[0m] Checking: {url} ({status_code})\033[K\r")
                     sys.stdout.flush()
                     return None
@@ -129,14 +141,14 @@ async def main_pipeline(targets, paths_wordlist, args):
         all_discovered_endpoints = []
         
         for target in targets:
-            # Step A: Enumerate full subdomain layout via Stage 1 Miner
+            # Step A: Enumerate full subdomain layout via multi-source API collectors
             subdomains = await fetch_passive_subdomains(session, target)
             print(f"[*] [Stage 1 Complete] Discovered {len(subdomains)} unique public subdomains for target: {target}")
             
             if not subdomains:
                 continue
 
-            # Step B: Compile comprehensive target execution grid matrix
+            # Step B: Compile complete cross-protocol execution matrix
             scan_queue = []
             for sub in subdomains:
                 scan_queue.append(f"http://{sub}")
@@ -155,11 +167,11 @@ async def main_pipeline(targets, paths_wordlist, args):
             target_findings = [res for res in results if res is not None]
             all_discovered_endpoints.extend(target_findings)
             
-        sys.stdout.write("\033[K") # Clear leftover line buffers from the fuzzer tracking loop
+        sys.stdout.write("\033[K")  # Clear trailing terminal updates
         print("\n" + "="*75)
         print(f"[*] Recon complete. Pipeline mapped {len(all_discovered_endpoints)} valid target configurations.")
         
-        # Write final outputs to file
+        # Write clean structural database entries
         if args.format == "json":
             with open(args.output, "w", encoding="utf-8") as f:
                 json.dump(all_discovered_endpoints, f, indent=4)
@@ -178,7 +190,7 @@ async def main_pipeline(targets, paths_wordlist, args):
 
 def run():
     print("="*75)
-    print("          Subdominator x ffuf Framework v9.1 - Complete Production Edition")
+    print("          Subdominator x ffuf Engine v10.0 - Deep Recon Core")
     print("="*75)
 
     parser = argparse.ArgumentParser(description="Subdominator + ffuf Unified Enterprise Web Asset Pipeline")
